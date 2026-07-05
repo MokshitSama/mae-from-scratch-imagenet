@@ -2,7 +2,7 @@
 
 Reproducing **Masked Autoencoders Are Scalable Vision Learners** (He et al., CVPR 2022) end-to-end as a learning project — a supervised baseline, self-supervised MAE pretraining, and finetuning, all built from scratch with PyTorch + 🤗 Accelerate on a 6× RTX 5090 box.
 
-**The question this repo answers:** *how much does MAE self-supervised pretraining actually buy you over training the same ViT-B/16 from scratch?* The paper reports ≈ **+1.3%** top-1. This reproduces that delta — and documents the multi-GPU engineering needed to make it train fast on consumer GPUs with no P2P.
+**The question this repo answers:** *how much does MAE self-supervised pretraining actually buy you over training the same ViT-B/16 from scratch?* The paper reports ≈ **+1.3%** top-1 over its supervised baseline. This project measures that delta on a **rigorously matched** comparison — and lands on a more nuanced answer (**MAE trails a *strong* baseline by 0.45%**; see [Results](#results) and [Findings](#findings)) — while documenting the multi-GPU engineering needed to train it fast on consumer GPUs with no P2P.
 
 ---
 
@@ -23,7 +23,7 @@ flowchart LR
         A2["ImageNet-1K<br/>(labels)"] --> G
         G --> H["finetuned<br/>top-1"]
     end
-    C -.compare.-> RES{{"Δ = finetuned − scratch<br/>(target ≈ +1.3%)"}}
+    C -.compare.-> RES{{"Δ = finetuned − scratch<br/>(measured: −0.45% — see Results)"}}
     H -.compare.-> RES
 ```
 
@@ -95,13 +95,36 @@ flowchart LR
 
 ## Results
 
-| Model | Pretrain | Top-1 |
-|---|---|---|
-| ViT-B/16 from scratch (Phase 1) | — | _TBD_ |
-| ViT-B/16 finetuned (Phase 3) | MAE 400ep (Phase 2) | _TBD_ |
-| **Δ** | | **_TBD_** |
+All numbers on the **held-out 50k `/val`** — an in-distribution holdout (peeled from train and *removed* from it), so absolutes run ~+2% above the official ILSVRC val: **track the delta, not the raw number.** Both models: same train set (1.23M), same val, same eval protocol + EMA — the *only* difference is the model's initialization.
 
-_(Phase 2 pretraining in progress; Phase 3 numbers to follow.)_
+| Model | Init | Top-1 (`/val`) |
+|---|---|---|
+| ViT-B/16 from scratch (Phase 1) | random | **84.51%** |
+| ViT-B/16 finetuned (Phase 3) | MAE 400-ep pretrain | **84.06%** |
+| **Δ (MAE − scratch)** | | **−0.45%** |
+
+MAE was reproduced **faithfully** (84.06 ≈ the paper's 400-epoch finetune) — but it **does not beat** a well-tuned supervised baseline here.
+
+---
+
+## Findings
+
+**MAE didn't win — and that's a legitimate, interesting result, not a failure.**
+
+The headline delta went through three values as two *evaluation confounds* were caught and fixed — each one a lesson in how easy it is to fool yourself with a sloppy comparison:
+
+| Stage | train | val | MAE | scratch | Δ |
+|---|---|---|---|---|---|
+| initial | 90% (k-fold) | k-fold holdout | 83.44 | — | *invalid — different val sets* |
+| matched val | 90% | `/val` | 83.65 | 84.51 | −0.86 |
+| **matched train + val** | **100%** | **`/val`** | **84.06** | **84.51** | **−0.45** |
+
+1. **Val-set mismatch** — Phase 3 originally validated on its own k-fold slice of *train*, while the baseline used `/val`. Apples vs oranges. Re-evaluating both on the same `/val` → −0.86.
+2. **Train-set mismatch** — Phase 3 trained on only 90% of train (the k-fold left 10% out) vs the baseline's 100%. Training on the full set → **−0.45**.
+
+**Why MAE doesn't win here:** the supervised baseline (84.51 ≈ 82% official-equivalent) is *strong* — right at the number the MAE paper reports for its own from-scratch ViT-B, and at MAE ViT-B's own ceiling (~83.6% official even with **1600**-epoch pretraining). When the supervised recipe is this good, MAE has essentially no room to help at this model size.
+
+**The real lesson:** MAE's advantage over supervised training is **conditional on baseline strength.** Its genuine payoff comes from *extra unlabeled data* a supervised baseline can't use — not from out-competing a well-tuned supervised recipe on the same labeled ImageNet-1k. Reproducing the paper's headline +1.3% would require comparing against the paper's *weaker* (~82.3%) baseline, not this elite one.
 
 ---
 
