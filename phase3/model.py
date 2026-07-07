@@ -9,6 +9,7 @@ class Model(nn.Module):
         super().__init__()
         self.backbone = timm.create_model(
             model_name, pretrained=pretrained, num_classes=0,
+            global_pool="avg",
             drop_path_rate=drop_path_rate,        # recipe; helps stability
         )                                         # no global_pool='' -> cls-token pooled [B,768]
         self.num_features = self.backbone.num_features
@@ -16,7 +17,19 @@ class Model(nn.Module):
 
     def forward(self, x):
         features = self.backbone(x)               # [B, 768] (cls token)
-        return self.head(features)                # [B, 1000] logits
+        return self.head(features)                # [B, 1000] logits]
+    
+    @torch.no_grad()
+    def load_mae_encoder(self, ckpt_path):
+        sd = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+
+        enc = {k: v for k, v in sd.items()
+               if k.startswith(("patch_embed", "cls_token", "pos_embed", "blocks"))}
+        
+        missing, unexpected = self.backbone.load_state_dict(enc, strict=False)
+        return missing, unexpected #expected -> missing = ['fc_norm.weight','fc_norm.bias'], unexpected = []
+
+
 
 
 if __name__ == "__main__":

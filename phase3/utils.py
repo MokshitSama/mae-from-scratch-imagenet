@@ -17,27 +17,42 @@ def load_ckpt(path, model, accelerator):
     state = torch.load(path, map_location="cpu", weights_only=True)
     accelerator.unwrap_model(model).load_state_dict(state)
 
-def build_param_groups(model, weight_decay):
-    """Weight decay on weight matrices only; none on norms/biases (1-D params)."""
-    decay, no_decay = [], []
+def build_param_groups(model, weight_decay, layer_decay, base_lr):
+    """LLRD (Layer_Wise learning rate decay) - since our model is pretty much trained 
+    we need to generalize more AND NOT DESTROY PRE LEARNED KNOWLEDGE"""
+    
+    num_layers = len(model.backbone.blocks) + 1 #12+1=13
+    scales = [layer_decay ** (num_layers-i) for i in range(num_layers+1)] #scales 0-13
+
+    def layer_id(name):
+        if name.startswith("backbone.patch_embed") or name in ("backbone.cls_token", "backbone.pos_embed"):
+            return 0
+        if name.startswith("backbone.blocks"):
+            return int(name.split(".")[2]) + 1 #backbone.blocks.N.* -> N + 1
+        return num_layers
+    
+    groups = {}
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        if p.ndim <= 1 or name.endswith(".bias"):
-            no_decay.append(p)
-        else:
-            decay.append(p)
-    return [
-        {"params": decay, "weight_decay": weight_decay},
-        {"params": no_decay, "weight_decay": 0.0},
-    ]
 
+        no_wd =  p.ndim <= 1 or name.endswith(".bias")
+        lid = layer_id(name)
+        key = f"L{lid}_{'no_wd' if no_wd else 'wd'}"
+        if key not in groups:
+            groups[key] =  {
+                    "params": [], "lr": base_lr * scales[lid],
+                    "weight_decay": 0.0 if no_wd else weight_decay
+            }
+
+        groups[key]["params"].append(p)
+    return list(groups.values())
 
 def get_criterion_optimizer_scheduler(model, num_warmup_steps, num_training_steps):
     criterion = SoftTargetCrossEntropy()                      # mixup -> soft targets
     optimizer = torch.optim.AdamW(
-        build_param_groups(model, CFG.weight_decay),          # NOT model.parameters()
-        lr=CFG.peak_lr, betas=(0.9, 0.95),
+        build_param_groups(model, CFG.weight_decay, CFG.layer_decay, CFG.peak_lr),          # NOT model.parameters()
+        lr=CFG.peak_lr, betas=(0.9, 0.999),
     )
     scheduler = get_cosine_schedule_with_warmup(
         optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps,
@@ -50,7 +65,7 @@ def train_one_epoch(model, loader, criterion, optimizer, scheduler, accelerator,
     running = 0.0
     n_seen, t0 = 0, time()
     bar = tqdm(loader, disable=not accelerator.is_main_process)
-    for images, targets in loader:                            # accelerate puts batch on device
+    for images, targets in bar:                            # accelerate puts batch on device
         images, targets = mixup_fn(images, targets)           # -> soft targets
         with accelerator.accumulate(model):                   # grad-accum + loss scaling handled
             logits = model(images)                            # bf16 autocast handled by Accelerator

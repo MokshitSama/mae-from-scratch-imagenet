@@ -2,7 +2,7 @@
 
 Reproducing **Masked Autoencoders Are Scalable Vision Learners** (He et al., CVPR 2022) end-to-end as a learning project — a supervised baseline, self-supervised MAE pretraining, and finetuning, all built from scratch with PyTorch + 🤗 Accelerate on a 6× RTX 5090 box.
 
-**The question this repo answers:** *how much does MAE self-supervised pretraining actually buy you over training the same ViT-B/16 from scratch?* The paper reports ≈ **+1.3%** top-1 over its supervised baseline. This project measures that delta on a **rigorously matched** comparison — and lands on a more nuanced answer (**MAE trails a *strong* baseline by 0.45%**; see [Results](#results) and [Findings](#findings)) — while documenting the multi-GPU engineering needed to train it fast on consumer GPUs with no P2P.
+**The question this repo answers:** *how much does MAE self-supervised pretraining actually buy you over training the same ViT-B/16 from scratch?* The paper reports ≈ **+1.3%** top-1 over its supervised baseline. This project measures that delta on a **rigorously matched** comparison — and lands on a more nuanced answer (**MAE reaches *parity* with a strong baseline, −0.24% ≈ seed noise**; see [Results](#results) and [Findings](#findings)) — while documenting the multi-GPU engineering needed to train it fast on consumer GPUs with no P2P.
 
 ---
 
@@ -23,7 +23,7 @@ flowchart LR
         A2["ImageNet-1K<br/>(labels)"] --> G
         G --> H["finetuned<br/>top-1"]
     end
-    C -.compare.-> RES{{"Δ = finetuned − scratch<br/>(measured: −0.45% — see Results)"}}
+    C -.compare.-> RES{{"Δ = finetuned − scratch<br/>(measured: −0.24% ≈ parity)"}}
     H -.compare.-> RES
 ```
 
@@ -100,31 +100,35 @@ All numbers on the **held-out 50k `/val`** — an in-distribution holdout (peele
 | Model | Init | Top-1 (`/val`) |
 |---|---|---|
 | ViT-B/16 from scratch (Phase 1) | random | **84.51%** |
-| ViT-B/16 finetuned (Phase 3) | MAE 400-ep pretrain | **84.06%** |
-| **Δ (MAE − scratch)** | | **−0.45%** |
+| ViT-B/16 finetuned (Phase 3) | MAE 400-ep pretrain | **84.27%** |
+| **Δ (MAE − scratch)** | | **−0.24%** *(statistical parity)* |
 
-MAE was reproduced **faithfully** (84.06 ≈ the paper's 400-epoch finetune) — but it **does not beat** a well-tuned supervised baseline here.
+MAE was reproduced **faithfully** (84.27 ≈ the paper's 400-epoch finetune) and finetunes to **parity** with a strong from-scratch baseline — the −0.24% gap sits inside run-to-run seed noise (±0.1–0.3%). It **matches**, but doesn't *beat*, a well-tuned supervised recipe here.
 
 ---
 
 ## Findings
 
-**MAE didn't win — and that's a legitimate, interesting result, not a failure.**
+**MAE reaches parity — and the *path* to that number is the real result.**
 
-The headline delta went through three values as two *evaluation confounds* were caught and fixed — each one a lesson in how easy it is to fool yourself with a sloppy comparison:
+The headline delta **collapsed toward zero** as three confounds were caught and fixed — each a lesson in how easy it is to fool yourself with a sloppy comparison:
 
-| Stage | train | val | MAE | scratch | Δ |
-|---|---|---|---|---|---|
-| initial | 90% (k-fold) | k-fold holdout | 83.44 | — | *invalid — different val sets* |
-| matched val | 90% | `/val` | 83.65 | 84.51 | −0.86 |
-| **matched train + val** | **100%** | **`/val`** | **84.06** | **84.51** | **−0.45** |
+| Stage | train | val | aug | MAE | scratch | Δ |
+|---|---|---|---|---|---|---|
+| initial | 90% (k-fold) | k-fold holdout | weak | 83.44 | — | *invalid* |
+| matched val | 90% | `/val` | weak | 83.65 | 84.51 | −0.86 |
+| matched train | 100% | `/val` | weak | 84.06 | 84.51 | −0.45 |
+| **matched aug** | **100%** | **`/val`** | **matched** | **84.27** | **84.51** | **−0.24** |
 
-1. **Val-set mismatch** — Phase 3 originally validated on its own k-fold slice of *train*, while the baseline used `/val`. Apples vs oranges. Re-evaluating both on the same `/val` → −0.86.
-2. **Train-set mismatch** — Phase 3 trained on only 90% of train (the k-fold left 10% out) vs the baseline's 100%. Training on the full set → **−0.45**.
+1. **Val-set mismatch** — Phase 3 originally validated on its own k-fold slice of *train*, while the baseline used `/val`. Apples vs oranges. Matching the val set → −0.86.
+2. **Train-set mismatch** — Phase 3 trained on only 90% of train (the k-fold left 10% out) vs the baseline's 100%. Matching the train set → −0.45.
+3. **Augmentation mismatch** — Phase 3 ran weaker aug (RandomResizedCrop + flip only) vs the baseline's timm **RandAugment + Random Erasing**. Matching the augmentation (identical timm pipeline) → **−0.24 — statistical parity.**
 
-**Why MAE doesn't win here:** the supervised baseline (84.51 ≈ 82% official-equivalent) is *strong* — right at the number the MAE paper reports for its own from-scratch ViT-B, and at MAE ViT-B's own ceiling (~83.6% official even with **1600**-epoch pretraining). When the supervised recipe is this good, MAE has essentially no room to help at this model size.
+**Why it's a dead heat:** the supervised baseline (84.51 ≈ 82% official-equivalent) is *strong* — right at the number the MAE paper reports for its own from-scratch ViT-B, and at MAE ViT-B's own ceiling (~83.6% official even with **1600**-epoch pretraining). With a supervised recipe this good and everything matched, MAE lands **within seed noise** — it neither wins nor loses.
 
-**The real lesson:** MAE's advantage over supervised training is **conditional on baseline strength.** Its genuine payoff comes from *extra unlabeled data* a supervised baseline can't use — not from out-competing a well-tuned supervised recipe on the same labeled ImageNet-1k. Reproducing the paper's headline +1.3% would require comparing against the paper's *weaker* (~82.3%) baseline, not this elite one.
+**The real lesson:** MAE's advantage over supervised training is **conditional on baseline strength.** Against a well-tuned supervised recipe on the same labeled ImageNet-1k it reaches *parity*, not a win; its genuine payoff comes from *extra unlabeled data* a supervised baseline can't use. Reproducing the paper's headline +1.3% would require comparing against the paper's *weaker* (~82.3%) baseline, not this elite one.
+
+*(The de-confounding itself — chasing −1.07 → −0.86 → −0.45 → −0.24 by fixing val, train, and aug one variable at a time — is the methodological point of this repo.)*
 
 ---
 

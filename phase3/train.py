@@ -20,12 +20,17 @@ accelerator = Accelerator(mixed_precision="bf16",
 
 set_seed(CFG.seed)
 
-out = Path("/mnt/md0/mokshit/codes/mae_imagenet/try1") / f"Version_{CFG.V}_{CFG.model_name}_fold{CFG.FOLD}"
+out = Path("/mnt/md0/mokshit/codes/mae_imagenet/phase3/try1") / f"FINETUNE_Version_{CFG.V}_{CFG.model_name}_fold{CFG.FOLD}"
 if accelerator.is_main_process:
     out.mkdir(parents=True, exist_ok=True)
     (out / "config.json").write_text(json.dumps({k: v for k, v in vars(CFG).items() if not k.startswith("__")}, indent=2, default=str))
 
 model = Model(model_name=CFG.model_name ,n_classes=1000, drop_path_rate=CFG.drop_path)
+missing, unexpected = model.load_mae_encoder(CFG.mae_ckpt)
+if accelerator.is_main_process:
+    accelerator.print(f"loaded MAE Encoder | missing : {missing} | unexpected : {unexpected}")
+model.to(memory_format=torch.channels_last)
+
 train_loader, val_loader = build_loaders()
 
 train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
@@ -46,7 +51,7 @@ best_score = 0.0
 for epoch in range(CFG.epochs):
     loss, img_s = train_one_epoch(model, train_loader, criterion, optimizer,
                            scheduler, accelerator, mixup_fn, ema)
-    t1, t5 = evaluate(ema.module, val_loader, accelerator)   # ALL processes (gather)s                          # gate only logging/saving
+    t1, t5 = evaluate(ema.module, val_loader, accelerator)
     improved = t1 > best_score
     if improved:
         best_score = t1

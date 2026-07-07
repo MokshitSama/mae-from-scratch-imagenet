@@ -1,22 +1,16 @@
 import os
-import numpy as np
-import cv2
-from PIL import Image
+import glob
 
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
-
-from sklearn.model_selection import StratifiedKFold
-
-import torch
+from PIL import Image, ImageFile
 from torch.utils.data import Dataset, DataLoader
+
+from timm.data import create_transform
+from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 from config import CFG
 
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
+ImageFile.LOAD_TRUNCATED_IMAGES = True   # don't die on a rare truncated JPEG
 
-import glob
 
 def build_index(split_root):
     classes = sorted(os.listdir(split_root))            # deterministic, alphabetical
@@ -30,67 +24,56 @@ def build_index(split_root):
 
 
 class IMAGENET_DATASET(Dataset):
-    def __init__(self, paths, labels, transforms=None):
+    """PIL-loading (like Phase 1) so timm's PIL-based RandAugment applies identically."""
+    def __init__(self, paths, labels, transform=None):
         self.paths = paths
         self.labels = labels
-        self.transforms = transforms
+        self.transform = transform
 
     def __len__(self):
         return len(self.paths)
 
-    def __getitem__(self, x):
-        path = self.paths[x]
-        img = cv2.imread(path, cv2.IMREAD_COLOR)
-        if img is None:             # rare ImageNet files cv2 chokes on
-            img = np.asarray(Image.open(path).convert("RGB"))
-        else:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-        if self.transforms:
-            img = self.transforms(image=img)["image"]
-
-        return img, self.labels[x]
+    def __getitem__(self, i):
+        img = Image.open(self.paths[i]).convert("RGB")
+        if self.transform:
+            img = self.transform(img)
+        return img, self.labels[i]
 
 
-train_transforms = A.Compose([
-    A.HorizontalFlip(p=0.5),
-    A.RandomResizedCrop(size=(CFG.img_size[0], CFG.img_size[1]), scale=(0.08, 1.0)),
-    A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-    ToTensorV2(),
-])
-
-val_transforms = A.Compose([
-    A.SmallestMaxSize(max_size=256),                          # was missing -> variable sizes
-    A.CenterCrop(height=CFG.img_size[0], width=CFG.img_size[1]),
-    A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-    ToTensorV2(),
-])
+# EXACTLY Phase 1's augmentation (timm/DeiT recipe) — so the finetune runs on a level field:
+#   RandomResizedCrop + flip + RandAugment(rand-m9) + Random Erasing(0.25), bicubic.
+train_transforms = create_transform(
+    input_size=CFG.img_size[0], is_training=True,
+    auto_augment="rand-m9-mstd0.5-inc1",         # RandAugment — same policy as Phase 1
+    interpolation="bicubic",
+    re_prob=0.25, re_mode="pixel",               # Random Erasing — same as Phase 1
+    mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD,
+)
+val_transforms = create_transform(                # is_training=False -> resize256 / centercrop224
+    input_size=CFG.img_size[0], is_training=False, interpolation="bicubic",
+    mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD,
+)
 
 
 def build_loaders():
-    paths, labels, _ = build_index(os.path.join(CFG.data_root, "train"))
+    # train on ALL of train, validate on the held-out 50k /val — identical setup to Phase 1 (fair delta)
+    tr_paths, tr_labels, _ = build_index(os.path.join(CFG.data_root, "train"))
+    va_paths, va_labels, _ = build_index(os.path.join(CFG.data_root, "val"))
 
-    if CFG.dev:                                    # tiny smoke: first 20 classes (k-fold safe)
-        keep = [i for i, l in enumerate(labels) if l < 20]
-        paths = [paths[i] for i in keep]
-        labels = [labels[i] for i in keep]
+    if CFG.dev:                                    # tiny smoke: first 20 classes on BOTH splits
+        tr = [i for i, l in enumerate(tr_labels) if l < 20]
+        va = [i for i, l in enumerate(va_labels) if l < 20]
+        tr_paths, tr_labels = [tr_paths[i] for i in tr], [tr_labels[i] for i in tr]
+        va_paths, va_labels = [va_paths[i] for i in va], [va_labels[i] for i in va]
 
-    skf = StratifiedKFold(n_splits=CFG.n_splits, shuffle=True, random_state=CFG.seed)
-    train_idx, val_idx = list(skf.split(paths, labels))[CFG.FOLD]   # labels drive stratification
-
-    tr_paths = [paths[i] for i in train_idx]
-    tr_labels = [labels[i] for i in train_idx]
-    va_paths = [paths[i] for i in val_idx]
-    va_labels = [labels[i] for i in val_idx]
-
-    train_dataset = IMAGENET_DATASET(tr_paths, tr_labels, transforms=train_transforms)
-    val_dataset = IMAGENET_DATASET(va_paths, va_labels, transforms=val_transforms)
+    train_dataset = IMAGENET_DATASET(tr_paths, tr_labels, transform=train_transforms)
+    val_dataset = IMAGENET_DATASET(va_paths, va_labels, transform=val_transforms)
 
     train_loader = DataLoader(train_dataset, batch_size=CFG.batch_size, shuffle=True,
-                              num_workers=CFG.num_workers, pin_memory=False,
-                              drop_last=True, persistent_workers=CFG.num_workers > 0)
+                              num_workers=CFG.num_workers, pin_memory=True,       # pin+prefetch = the overlap speedup
+                              drop_last=True, persistent_workers=CFG.num_workers > 0, prefetch_factor=4)
     val_loader = DataLoader(val_dataset, batch_size=CFG.batch_size, shuffle=False,
-                            num_workers=CFG.num_workers, pin_memory=False,
+                            num_workers=CFG.num_workers, pin_memory=True,
                             drop_last=False, persistent_workers=CFG.num_workers > 0)
     return train_loader, val_loader
 
@@ -98,6 +81,6 @@ def build_loaders():
 if __name__ == "__main__":
     tl, vl = build_loaders()
     imgs, lbls = next(iter(tl))
-    print("train batch:", tuple(imgs.shape), imgs.dtype, lbls.min().item(), lbls.max().item())
+    print("train batch:", tuple(imgs.shape), imgs.dtype)
     imgs, lbls = next(iter(vl))
     print("val batch:", tuple(imgs.shape))
