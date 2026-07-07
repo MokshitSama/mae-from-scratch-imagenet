@@ -132,6 +132,18 @@ The headline delta **collapsed toward zero** as three confounds were caught and 
 
 ---
 
+## What MAE actually buys you
+
+Parity on a strong baseline isn't the failure it looks like — it's the documented reality of MAE ViT-B on ImageNet-1k. The value is elsewhere, and the experiments show it:
+
+- **The MIM signature (linear probe).** Freeze the MAE encoder, train *only* a linear head → **~59%** (vs **84.3%** finetuned) — a ~25-point gap. MAE features are **rich but not linearly separable**: excellent finetuning inits, poor linear readouts. Contrastive/DINO is the mirror image (high probe, lower finetune). This is the defining property of masked image modeling.
+- **Convergence.** The MAE encoder finetunes to parity in **100 epochs**; the from-scratch baseline needs **~300**. The pretrained features are a strong starting point — but note MAE also spent 400 *label-free* pretraining epochs, so it's not "less total compute," it's "the pretraining is reusable and label-free."
+- **The real payoff = reusability + label efficiency.** Pretrain **once** on unlabeled data, then adapt fast to many downstream tasks; and with **few labels** MAE wins outright. MAE's edge over supervised training grows with model scale (ViT-L/H) and shrinks to zero against a well-tuned ViT-B supervised recipe.
+
+**One-line takeaway:** *on ImageNet-1k ViT-B, MAE matches a strong supervised baseline — its win is label-free pretraining you can reuse, and that shines when labels are scarce.*
+
+---
+
 ## Hardware & the performance story
 
 Trained on **6× RTX 5090** (a 7th GPU, an RTX 3090, is deliberately excluded). The interesting constraint: consumer 5090s have **no GPU-to-GPU P2P**, so every gradient all-reduce is *host-staged over PCIe at ~2.2 GB/s* across two NUMA sockets — a hard comm wall that caps multi-GPU scaling.
