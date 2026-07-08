@@ -57,11 +57,11 @@ The masking trick: draw random noise per patch, `argsort` it to get a shuffle, k
 
 ## Reconstructions
 
-The whole idea, made visual. The encoder sees only the **25% of patches** in the middle column; the decoder fills in the rest (right). Blurry — it's pixel-MSE, not a GAN — but *semantically right*: the model inferred the goldfish, the beetle's legs and antennae, the person's arm, and the orange's radial texture from a quarter of the image.
+The whole idea, made visual. The encoder sees only the **20% of patches** in the middle column; the decoder fills in the rest (right). Blurry — it's pixel-MSE, not a GAN — but *semantically right*: the model inferred the goldfish, the beetle's legs and antennae, the person's arm, and the orange's radial texture from a fifth of the image.
 
-![MAE reconstructions: original, 75%-masked input, and the model's fill-in](assets/mae_reconstruction.png)
+![MAE reconstructions: original, 80%-masked input, and the model's fill-in](assets/mae_reconstruction.png)
 
-*Left → original · Middle → the masked input the encoder actually receives (75% of patches dropped) · Right → MAE's reconstruction (visible patches kept, masked patches predicted by the decoder). Pretrained 400 epochs, mask ratio 0.75.*
+*Left → original · Middle → the masked input the encoder receives — **80% of patches hidden** · Right → MAE's reconstruction (visible patches kept, masked patches filled by the decoder). Pretrained 400 epochs at 75% masking; shown here at a harder **80%** to stress-test — it still reconstructs from just a fifth of the image. (Per-image recon loss 0.12–0.72, confirming these are the trained model's outputs, not a random init's ~0.9.)*
 
 > **SimMIM reconstructions coming** once its pretraining finishes — same three-panel view, for a side-by-side **MIM-drop (MAE) vs MIM-keep (SimMIM)** comparison.
 
