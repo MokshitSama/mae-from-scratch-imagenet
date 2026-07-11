@@ -15,7 +15,8 @@ class CFG:
     num_workers = 8
 
     # the MAE checkpoint we finetune FROM (Phase 2 output)
-    mae_ckpt = "/mnt/md0/mokshit/codes/mae_imagenet/phase2/try1/mae_V1/last.pth"
+    mae_ckpt = "/mnt/md0/mokshit/codes/mae_imagenet/phase2/try1/simmim_V1/last.pth"
+
 
     # train  (MAE ViT-B fine-tuning recipe, paper Table 8)
     epochs = 100                            # was 5;  ViT-B finetune = 100 epochs

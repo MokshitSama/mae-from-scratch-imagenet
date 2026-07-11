@@ -88,3 +88,4 @@ def evaluate(model, loader, accelerator):
         top5 += correct[:, :5].sum().item()
         total += targets.size(0)
     return 100 * top1 / total, 100 * top5 / total
+
